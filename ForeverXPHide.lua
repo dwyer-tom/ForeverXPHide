@@ -1,28 +1,30 @@
 local ADDON_NAME = ...
 
-local DEFAULTS = {
-    enabled = true,
-}
+local DEFAULT_ENABLED = true
+local hookedFrame
 
 local function Print(message)
-    DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99ForeverXPHide|r: " .. message)
+    if DEFAULT_CHAT_FRAME then
+        DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99ForeverXPHide|r: " .. message)
+    end
 end
 
-local function GetExperienceBar()
-    if not StatusTrackingBarManager
-        or not StatusTrackingBarManager.barContainers
-        or not StatusTrackingBarInfo
-        or not StatusTrackingBarInfo.BarsEnum
-        or not StatusTrackingBarInfo.BarsEnum.Experience then
+local function GetExperienceBarFrame()
+    local manager = StatusTrackingBarManager
+    local barInfo = StatusTrackingBarInfo
+
+    if not manager or not manager.barContainers
+        or not barInfo or not barInfo.BarsEnum
+        or barInfo.BarsEnum.Experience == nil then
         return nil
     end
 
-    local container = StatusTrackingBarManager.barContainers[1]
-    if not container or not container.bars then
+    local mainContainer = manager.barContainers[1]
+    if not mainContainer or not mainContainer.bars then
         return nil
     end
 
-    local experienceBar = container.bars[StatusTrackingBarInfo.BarsEnum.Experience]
+    local experienceBar = mainContainer.bars[barInfo.BarsEnum.Experience]
     if not experienceBar or not experienceBar.StatusBar then
         return nil
     end
@@ -32,6 +34,7 @@ local function GetExperienceBar()
         return nil
     end
 
+    -- This is the outer 1192x17 frame verified against the WoW Forever UI.
     return statusBarParent:GetParent()
 end
 
@@ -40,9 +43,19 @@ local function ApplyPreference()
         return false
     end
 
-    local frame = GetExperienceBar()
+    local frame = GetExperienceBarFrame()
     if not frame then
         return false
+    end
+
+    -- Re-attach if the client replaces the frame during UI initialisation.
+    if hookedFrame ~= frame then
+        frame:HookScript("OnShow", function(shownFrame)
+            if ForeverXPHideDB and ForeverXPHideDB.enabled then
+                shownFrame:Hide()
+            end
+        end)
+        hookedFrame = frame
     end
 
     frame:Hide()
@@ -54,13 +67,17 @@ local function SetEnabled(enabled)
 
     if ForeverXPHideDB.enabled then
         local applied = ApplyPreference()
-        Print(applied and "XP bar hidden." or "Preference saved; waiting for the XP bar to load.")
+        if applied then
+            Print("XP bar hidden. This preference is saved.")
+        else
+            Print("Preference saved; waiting for the XP bar to become available.")
+        end
     else
-        local frame = GetExperienceBar()
+        local frame = GetExperienceBarFrame()
         if frame then
             frame:Show()
         end
-        Print("XP bar shown. Your preference has been saved.")
+        Print("XP bar shown. This preference is saved.")
     end
 end
 
@@ -70,38 +87,14 @@ local function InitializeDatabase()
     end
 
     if ForeverXPHideDB.enabled == nil then
-        ForeverXPHideDB.enabled = DEFAULTS.enabled
+        ForeverXPHideDB.enabled = DEFAULT_ENABLED
     end
 end
 
-local function OnAddonLoaded(_, addonName)
-    if addonName ~= ADDON_NAME then
-        return
-    end
-
-    InitializeDatabase()
-
-    local attempts = 0
-    local tickerFrame = CreateFrame("Frame")
-    tickerFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
-    tickerFrame:SetScript("OnEvent", function(self)
-        attempts = 0
-        self:SetScript("OnUpdate", function(updateFrame, elapsed)
-            attempts = attempts + elapsed
-            if attempts < 0.25 then
-                return
-            end
-            attempts = 0
-
-            if ApplyPreference() then
-                updateFrame:SetScript("OnUpdate", nil)
-                updateFrame:UnregisterEvent("PLAYER_ENTERING_WORLD")
-            end
-        end)
-    end)
-
+local function RegisterSlashCommands()
     SLASH_FOREVERXPHIDE1 = "/xphide"
     SLASH_FOREVERXPHIDE2 = "/foreverxphide"
+
     SlashCmdList.FOREVERXPHIDE = function(message)
         local command = (message or ""):lower():match("^%s*(.-)%s*$")
 
@@ -116,12 +109,43 @@ local function OnAddonLoaded(_, addonName)
         elseif command == "help" then
             Print("/xphide on - hide the XP bar")
             Print("/xphide off - show the XP bar")
-            Print("/xphide toggle - toggle the setting")
-            Print("/xphide status - show the current setting")
+            Print("/xphide toggle - toggle hiding")
+            Print("/xphide status - show the saved setting")
+            Print("/xphide help - show this help")
         else
             Print("Unknown command. Use /xphide help.")
         end
     end
+end
+
+local function OnAddonLoaded(_, addonName)
+    if addonName ~= ADDON_NAME then
+        return
+    end
+
+    InitializeDatabase()
+    RegisterSlashCommands()
+
+    -- The tracking bar can be created after ADDON_LOADED. Retry briefly
+    -- after PLAYER_ENTERING_WORLD until its frame is available.
+    local elapsedSinceAttempt = 0
+    local retryFrame = CreateFrame("Frame")
+    retryFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+    retryFrame:SetScript("OnEvent", function(self)
+        elapsedSinceAttempt = 0
+        self:SetScript("OnUpdate", function(updateFrame, elapsed)
+            elapsedSinceAttempt = elapsedSinceAttempt + elapsed
+            if elapsedSinceAttempt < 0.25 then
+                return
+            end
+            elapsedSinceAttempt = 0
+
+            if ApplyPreference() then
+                updateFrame:SetScript("OnUpdate", nil)
+                updateFrame:UnregisterEvent("PLAYER_ENTERING_WORLD")
+            end
+        end)
+    end)
 end
 
 local eventFrame = CreateFrame("Frame")
