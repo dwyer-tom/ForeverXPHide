@@ -1,153 +1,150 @@
+-- ForeverXPHide
+-- WoW Forever / Camelot interface 16001
+-- Hides the native experience bar without hiding the tracking-bar manager.
+
 local ADDON_NAME = ...
-
-local DEFAULT_ENABLED = true
+local PREFIX = "|cffd7a64aForever XP Hide:|r "
+local eventFrame = CreateFrame("Frame")
 local hookedFrame
+local retryElapsed = 0
+local retryAttempts = 0
+local warnedThisSession = false
 
-local function Print(message)
-    if DEFAULT_CHAT_FRAME then
-        DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99ForeverXPHide|r: " .. message)
-    end
+ForeverXPHideDB = ForeverXPHideDB or {}
+if ForeverXPHideDB.enabled == nil then
+    ForeverXPHideDB.enabled = true
+end
+
+local function Message(text)
+    print(PREFIX .. text)
 end
 
 local function GetExperienceBarFrame()
-    local manager = StatusTrackingBarManager
-    local barInfo = StatusTrackingBarInfo
-
-    if not manager or not manager.barContainers
-        or not barInfo or not barInfo.BarsEnum
-        or barInfo.BarsEnum.Experience == nil then
+    if not StatusTrackingBarManager or not StatusTrackingBarInfo then
         return nil
     end
 
-    local mainContainer = manager.barContainers[1]
-    if not mainContainer or not mainContainer.bars then
-        return nil
-    end
-
-    local experienceBar = mainContainer.bars[barInfo.BarsEnum.Experience]
-    if not experienceBar or not experienceBar.StatusBar then
-        return nil
-    end
-
-    local statusBarParent = experienceBar.StatusBar:GetParent()
-    if not statusBarParent then
-        return nil
-    end
+    local containers = StatusTrackingBarManager.barContainers
+    local barsEnum = StatusTrackingBarInfo.BarsEnum
+    local experienceID = barsEnum and barsEnum.Experience
+    local container = containers and containers[1]
+    local bar = container and container.bars and experienceID
+        and container.bars[experienceID]
+    local statusBar = bar and bar.StatusBar
+    local parent = statusBar and statusBar:GetParent()
 
     -- This is the outer 1192x17 frame verified against the WoW Forever UI.
-    return statusBarParent:GetParent()
+    return parent and parent:GetParent() or nil
 end
 
-local function ApplyPreference()
-    if not ForeverXPHideDB or not ForeverXPHideDB.enabled then
-        return false
-    end
-
+local function ApplySetting()
     local frame = GetExperienceBarFrame()
     if not frame then
         return false
     end
 
-    -- Re-attach if the client replaces the frame during UI initialisation.
-    if hookedFrame ~= frame then
-        frame:HookScript("OnShow", function(shownFrame)
-            if ForeverXPHideDB and ForeverXPHideDB.enabled then
-                shownFrame:Hide()
+    if frame ~= hookedFrame then
+        hookedFrame = frame
+        frame:HookScript("OnShow", function(self)
+            if ForeverXPHideDB.enabled then
+                self:Hide()
             end
         end)
-        hookedFrame = frame
     end
 
-    frame:Hide()
+    if ForeverXPHideDB.enabled then
+        frame:Hide()
+    else
+        frame:Show()
+    end
+
     return true
 end
 
-local function SetEnabled(enabled)
+local function StopRetry()
+    eventFrame:SetScript("OnUpdate", nil)
+    retryElapsed = 0
+    retryAttempts = 0
+end
+
+local function StartRetry()
+    StopRetry()
+
+    if ApplySetting() then
+        return true
+    end
+
+    -- Some UI builds finish creating the tracking bar shortly after login.
+    -- Retry twice per second for up to ten seconds, then stop completely.
+    eventFrame:SetScript("OnUpdate", function(self, elapsed)
+        retryElapsed = retryElapsed + elapsed
+        if retryElapsed < 0.5 then
+            return
+        end
+
+        retryElapsed = 0
+        retryAttempts = retryAttempts + 1
+
+        if ApplySetting() then
+            StopRetry()
+            return
+        end
+
+        if retryAttempts >= 20 then
+            StopRetry()
+            if not warnedThisSession then
+                warnedThisSession = true
+                Message("couldn't find the XP bar. The UI may have changed in a newer client build.")
+            end
+        end
+    end)
+
+    return false
+end
+
+local function SetEnabled(enabled, announce)
     ForeverXPHideDB.enabled = enabled and true or false
 
-    if ForeverXPHideDB.enabled then
-        local applied = ApplyPreference()
-        if applied then
-            Print("XP bar hidden. This preference is saved.")
-        else
-            Print("Preference saved; waiting for the XP bar to become available.")
+    if StartRetry() then
+        if announce then
+            Message(ForeverXPHideDB.enabled and "XP bar hidden." or "XP bar shown.")
         end
+    elseif announce then
+        Message("waiting for the XP bar to initialise; your setting has been saved.")
+    end
+end
+
+local function ShowHelp()
+    Message("Commands:")
+    print("  /xphide       Toggle hiding")
+    print("  /xphide on    Hide the XP bar")
+    print("  /xphide off   Show the XP bar")
+    print("  /xphide status  Show the current setting")
+    print("  /xphide help  Show this help")
+end
+
+SLASH_FOREVERXPHIDE1 = "/xphide"
+SLASH_FOREVERXPHIDE2 = "/fxphide"
+SlashCmdList.FOREVERXPHIDE = function(message)
+    message = (message or ""):lower():match("^%s*(.-)%s*$")
+
+    if message == "on" then
+        SetEnabled(true, true)
+    elseif message == "off" then
+        SetEnabled(false, true)
+    elseif message == "status" then
+        Message(ForeverXPHideDB.enabled and "hiding is ON." or "hiding is OFF.")
+    elseif message == "help" then
+        ShowHelp()
+    elseif message == "" or message == "toggle" then
+        SetEnabled(not ForeverXPHideDB.enabled, true)
     else
-        local frame = GetExperienceBarFrame()
-        if frame then
-            frame:Show()
-        end
-        Print("XP bar shown. This preference is saved.")
+        ShowHelp()
     end
 end
 
-local function InitializeDatabase()
-    if type(ForeverXPHideDB) ~= "table" then
-        ForeverXPHideDB = {}
-    end
-
-    if ForeverXPHideDB.enabled == nil then
-        ForeverXPHideDB.enabled = DEFAULT_ENABLED
-    end
-end
-
-local function RegisterSlashCommands()
-    SLASH_FOREVERXPHIDE1 = "/xphide"
-    SLASH_FOREVERXPHIDE2 = "/foreverxphide"
-
-    SlashCmdList.FOREVERXPHIDE = function(message)
-        local command = (message or ""):lower():match("^%s*(.-)%s*$")
-
-        if command == "on" then
-            SetEnabled(true)
-        elseif command == "off" then
-            SetEnabled(false)
-        elseif command == "toggle" or command == "" then
-            SetEnabled(not ForeverXPHideDB.enabled)
-        elseif command == "status" then
-            Print("XP bar hiding is " .. (ForeverXPHideDB.enabled and "enabled." or "disabled."))
-        elseif command == "help" then
-            Print("/xphide on - hide the XP bar")
-            Print("/xphide off - show the XP bar")
-            Print("/xphide toggle - toggle hiding")
-            Print("/xphide status - show the saved setting")
-            Print("/xphide help - show this help")
-        else
-            Print("Unknown command. Use /xphide help.")
-        end
-    end
-end
-
-local function OnAddonLoaded(_, addonName)
-    if addonName ~= ADDON_NAME then
-        return
-    end
-
-    InitializeDatabase()
-    RegisterSlashCommands()
-
-    -- The tracking bar can be created after ADDON_LOADED. Retry briefly
-    -- after PLAYER_ENTERING_WORLD until its frame is available.
-    local elapsedSinceAttempt = 0
-    local retryFrame = CreateFrame("Frame")
-    retryFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
-    retryFrame:SetScript("OnEvent", function(self)
-        elapsedSinceAttempt = 0
-        self:SetScript("OnUpdate", function(updateFrame, elapsed)
-            elapsedSinceAttempt = elapsedSinceAttempt + elapsed
-            if elapsedSinceAttempt < 0.25 then
-                return
-            end
-            elapsedSinceAttempt = 0
-
-            if ApplyPreference() then
-                updateFrame:SetScript("OnUpdate", nil)
-                updateFrame:UnregisterEvent("PLAYER_ENTERING_WORLD")
-            end
-        end)
-    end)
-end
-
-local eventFrame = CreateFrame("Frame")
-eventFrame:RegisterEvent("ADDON_LOADED")
-eventFrame:SetScript("OnEvent", OnAddonLoaded)
+eventFrame:RegisterEvent("PLAYER_LOGIN")
+eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+eventFrame:SetScript("OnEvent", function()
+    StartRetry()
+end)
