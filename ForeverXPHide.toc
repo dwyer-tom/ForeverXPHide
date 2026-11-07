@@ -1,0 +1,8 @@
+## Interface: 16001
+## Title: ForeverXPHide
+## Notes: Hides the experience bar for a more immersive WoW Forever experience.
+## Author: dwyer-tom
+## Version: 1.1.0
+## SavedVariables: ForeverXPHideDB
+
+ForeverXPHide.lua
